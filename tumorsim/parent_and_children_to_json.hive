@@ -1,0 +1,46 @@
+-- ************************************************************************************************************;
+-- parent_and_children_to_json.hive;
+-- ************************************************************************************************************;
+-- build json for parent subclone plus all of its children like:   , concat("{'name':",subclone,",'subpop':",cells,",'mutations':",mutations,",'fitness':",fitness,"}") as subclone_json;
+-- ************************************************************************************************************;
+
+-- export mutations=5
+
+set hive.execution.engine=tez;
+
+--!echo mutations=${env:mutations};;
+--mutations=5
+
+drop   view if     exists tumorsim.detectable_json_parents;
+create view if not exists tumorsim.detectable_json_parents as
+  select tumorid
+    ,'|',parent
+    ,'|',subpop
+    ,'|'
+    ,"{'name':",case when parent = -1 then tumorid else cast(subclone as string) end,",'subpop':",subpop as sp,",'mutations':",mutations,",'fitness':",fitness
+    ,",'children':"
+                   ,case when size(json) > 0 then json end as json
+    ,"}"
+  from
+  (
+    select parents.tumorid , parents.parent , parents.subclone , parents.cells , parents.mutations , parents.fitness
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+      , collect_set(children.json) as json
+    from
+    (
+      select tumorid , parent , subclone , cells , mutations , fitness
+      from tumorsim.tumors_detectable
+      where finalsnapshot='Y' and mutations = ${env:mutations}
+    ) parents
+    left join tumorsim.detectable_json_children children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.parent , parents.subclone , parents.cells , parents.mutations , parents.fitness
+  ) joined
+  where subpop > 0
+;
+
+
+--select * from tumorsim.detectable_cellcount_mutations_json_parents where tumorid="BD9_20308" and size(json)>0 limit 3;
+--BD9_20308|399|846|{   'name':14107,'subpop':846,'mutations':5,'fitness':1.0804984963957946,'children':["{'name':54249,'subpop':32,'mutations':6,'fitness':1.1180860558883867}"]};
+--BD9_20308|399|76|{   'name':42211,'subpop':76,'mutations':5,'fitness':1.0646937323098526,'children':["{'name':111865,'subpop':2,'mutations':6,'fitness':1.0745707491236498}"]};

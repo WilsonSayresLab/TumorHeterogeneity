@@ -1,0 +1,25 @@
+-- *******************************************************************************************************;
+-- export_tumors_and_populations.hive
+-- *******************************************************************************************************;
+
+create view if not exists tumorsim.detectables as select tumorid from tumorsim.populations where population >= pow(10,9) ;
+
+hive -e "select count(*) from tumorsim.detectables"
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.populations order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/populations.//g' > /home/project/tumorsim/populations.txt
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.tumors order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/tumors.//g' > /home/project/tumorsim/tumors.txt
+
+create view if not exists tumorsim.tumors_detectable as select t.* from tumorsim.detectables D inner join tumorsim.tumors t on t.tumorid = d.tumorid;
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.tumors_detectable order by tumorid , finalsnapshot , year , subclone" | grep -E '^\_c0'| cut -c5- | sed 's/tumors.//g' > /home/project/tumorsim/tumors_detectable.txt
+
+create view if not exists tumorsim.populations_detectable as select p.* from tumorsim.detectables D inner join tumorsim.populations p on p.tumorid = d.tumorid;
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.populations_detectable order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/populations.//g' > /home/project/tumorsim/populations_detectable.txt
+
+or faster method from a temp database
+
+hive -e "set hive.cli.print.header=true; select * from tmp.tumors_detectable order by tumorid , finalsnapshot , year , subclone" | sed 's/tumors.//g' > /home/project/tumorsim/tumors_detectable.txt
+
+hive -e "set hive.cli.print.header=true; select * from tmp.populations_detectable order by tumorid , generation" | sed 's/populations.//g' > /home/project/tumorsim/populations_detectable.txt

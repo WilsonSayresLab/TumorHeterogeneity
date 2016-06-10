@@ -1,0 +1,360 @@
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+-- ************************************************************************************************************;
+-- create initial subclone json formatting with single quotes to be replaced with doubles at the end;
+-- json formatting example "name":parent#,"children":[{"name":subclone#,"name":subclone#}]
+-- ************************************************************************************************************;
+
+drop   view tmp.tumors_detectable_json;
+create view tmp.tumors_detectable_json as select * , concat("'name':",subclone) subclone_json from tmp.tumors_detectable;
+
+select * from tmp.tumors_detectable_json limit 3;
+
+-- ************************************************************************************************************;
+-- level 5 mutations - highest level in our dataset;
+-- ************************************************************************************************************;
+
+drop   table tumorsim.detectable_cellcount_mutations_5_json;
+create table tumorsim.detectable_cellcount_mutations_5_json as
+  select tumorid , subclone , parent , fitness , dob , dod , mutations , cells , cells as subpop , concat("{",subclone_json,"}") as subclone_json
+  from tmp.tumors_detectable_json
+  where finalsnapshot='Y' and mutations = 5 and cells > 0
+;
+
+select * from tumorsim.detectable_cellcount_mutations_5_json limit 3;
+
+AD9_1804  36509   1003  1.5876867180935719  509 0 5 1 1 {'name':36509}
+AD9_3568  16925   616 1.4770433506753604  586 0 5 2 2 {'name':16925}
+AD9_7960  10257   68  1.3812547212734296  391 0 5 8 8 {'name':10257}
+
+-- ************************************************************************************************************;
+-- level 4 mutations and their children with one more mutation;
+-- ************************************************************************************************************;
+
+drop   table tumorsim.detectable_cellcount_mutations_4_json_builder;
+create table tumorsim.detectable_cellcount_mutations_4_json_builder as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+      , collect_set(children.subclone_json) as children_json
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells , subclone_json
+      from tmp.tumors_detectable_json
+      where finalsnapshot='Y' and mutations = 4
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_5_json children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+  ) joined
+  where subpop > 0
+;
+--47614 rows;
+
+select * from tumorsim.detectable_cellcount_mutations_4_json_builder limit 3;
+
+AC9_2127  753 88  1.7462228789652419  413 0 4 64  'name':753  64  []
+AC9_2127  855 88  1.7559308300453744  414 0 4 84  'name':855  84  []
+AC9_2127  858 88  1.7456586625872486  414 0 4 68  'name':858  68  []
+
+-- *******************************************************************************************************************;
+-- level 4 mutations build out partial json structure;
+-- *******************************************************************************************************************;
+
+drop   view tumorsim.detectable_cellcount_mutations_4_json_out;
+create view tumorsim.detectable_cellcount_mutations_4_json_out as
+  select tumorid,'|',parent,'|',subpop,'|{',subclone_json,",'children':",case when size(children_json)>0 then children_json end as children_json,'}' 
+  from tumorsim.detectable_cellcount_mutations_4_json_builder
+;
+
+select * from tumorsim.detectable_cellcount_mutations_4_json_out limit 3;
+
+AC9_2127|88|64|{'name':753,'children':NULL}
+AC9_2127|88|84|{'name':855,'children':NULL}
+AC9_2127|88|68|{'name':858,'children':NULL}
+
+select * from tumorsim.detectable_cellcount_mutations_4_json_out where size(children_json)>0 limit 3;
+
+AD9_3568|48|2822|{'name':616,'children':["{'name':16925}"]}
+AD9_9748|210|1902|{'name':424,'children':["{'name':25694}"]}
+BD9_3464|297|183924|{'name':2758,'children':["{'name':83561}","{'name':69446}","{'name':29112}"]}
+
+-- *******************************************************************************************************************;
+-- level 4 mutations export to build partial json and strip out the tabs and double quotes;
+-- *******************************************************************************************************************;
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_4_json_out where size(children_json)>0 limit 3" | tr -d '\"' | sed 's/\t//g'  
+
+AD9_3568|48|2822|{'name':616,'children':[{'name':16925}]}
+AD9_9748|210|1902|{'name':424,'children':[{'name':25694}]}
+BD9_3464|297|183924|{'name':2758,'children':[{'name':83561},{'name':69446},{'name':29112}]}
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_4_json_out" | tr -d '\"' | sed 's/\t//g'  > /home/project/tumorsim/detectable_cellcount_mutations_4_json_out
+
+-- *******************************************************************************************************************;
+-- level 4 mutations import json;
+-- *******************************************************************************************************************;
+
+drop            table tumorsim.detectable_cellcount_mutations_4_json_in;
+create external table tumorsim.detectable_cellcount_mutations_4_json_in
+  (tumorid string , parent string , subpop bigint , subclone_json string)
+  row format delimited fields terminated by '|'
+;
+load data local inpath '/home/project/tumorsim/detectable_cellcount_mutations_4_json_out' overwrite into table tumorsim.detectable_cellcount_mutations_4_json_in;
+
+select * from tumorsim.detectable_cellcount_mutations_4_json_in limit 3;
+
+tumorid parent subpop subclone_json
+AC9_2127  88  64  {'name':753,'children':NULL}
+AC9_2127  88  84  {'name':855,'children':NULL}
+AC9_2127  88  68  {'name':858,'children':NULL}
+
+-- *******************************************************************************************************************;
+-- level 3 mutations and their children with one more mutation;
+-- *******************************************************************************************************************;
+
+drop   table tumorsim.detectable_cellcount_mutations_3_json_builder;
+create table tumorsim.detectable_cellcount_mutations_3_json_builder as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+      , collect_set(children.subclone_json) as children_json
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells , subclone_json
+      from tmp.tumors_detectable_json
+      where finalsnapshot='Y' and mutations = 3
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_4_json_in children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+  ) joined
+  where subpop > 0
+;
+
+select * from tumorsim.detectable_cellcount_mutations_3_json_builder where size limit 3;
+
+
+-- *******************************************************************************************************************;
+-- level 3 mutations build out partial json structure;
+-- *******************************************************************************************************************;
+
+drop   view tumorsim.detectable_cellcount_mutations_3_json_out;
+create view tumorsim.detectable_cellcount_mutations_3_json_out as
+  select tumorid,'|',parent,'|',subpop,'|{',subclone_json,",'children':",case when size(children_json)>0 then children_json end as children_json,'}' 
+  from tumorsim.detectable_cellcount_mutations_3_json_builder
+;
+
+select * from tumorsim.detectable_cellcount_mutations_3_json_out where size(children_json)>0 limit 1;
+
+AC9_6987|8|40483590|{'name':42,'children':["{'name':3048,'children':NULL}","{'name':3053,'children':NULL}","{'name':2561,'children':NULL}
+","{'name':3068,'children':NULL}","{'name':3065,'children':NULL}","{'name':2122,'children':NULL}","{'name':2562,'children':NULL}","{'name':3057,'children':NULL}","{'name':1511,'children':NULL
+}","{'name':3064,'children':NULL}","{'name':3052,'children':NULL}","{'name':2566,'children':NULL}","{'name':3055,'children':NULL}","{'name':3061,'children':NULL}","{'name':1782,'children':NUL
+L}","{'name':3051,'children':NULL}","{'name':3059,'children':NULL}","{'name':2121,'children':NULL}","{'name':2560,'children':NULL}","{'name':3072,'children':NULL}","{'name':3058,'children':NU
+LL}","{'name':3050,'children':NULL}","{'name':3054,'children':NULL}","{'name':3056,'children':NULL}","{'name':3060,'children':NULL}","{'name':2563,'children':NULL}","{'name':3049,'children':N
+ULL}","{'name':761,'children':NULL}","{'name':3067,'children':NULL}","{'name':3073,'children':NULL}","{'name':3062,'children':NULL}","{'name':3071,'children':NULL}","{'name':2565,'children':N
+ULL}","{'name':2567,'children':NULL}","{'name':3066,'children':NULL}","{'name':3069,'children':NULL}","{'name':2564,'children':NULL}","{'name':1781,'children':NULL}","{'name':1512,'children':
+NULL}","{'name':3070,'children':NULL}","{'name':3063,'children':NULL}"] }
+
+-- *******************************************************************************************************************;
+-- level 3 mutations export to build partial json and strip out the tabs and double quotes;
+-- *******************************************************************************************************************;
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_3_json_out where size(children_json)>0 limit 1" | tr -d '\"' | sed 's/\t//g'  
+AC9_6987|8|40483590|{'name':42,'children':[{'name':3048,'children':NULL},{'name':3053,'children':NULL},{'name':2561,'children':NULL},{'name':3068,'children':NULL},{'name':3065,'children':NULL
+},{'name':2122,'children':NULL},{'name':2562,'children':NULL},{'name':3057,'children':NULL},{'name':1511,'children':NULL},{'name':3064,'children':NULL},{'name':3052,'children':NULL},{'name':2
+566,'children':NULL},{'name':3055,'children':NULL},{'name':3061,'children':NULL},{'name':1782,'children':NULL},{'name':3051,'children':NULL},{'name':3059,'children':NULL},{'name':2121,'childr
+en':NULL},{'name':2560,'children':NULL},{'name':3072,'children':NULL},{'name':3058,'children':NULL},{'name':3050,'children':NULL},{'name':3054,'children':NULL},{'name':3056,'children':NULL},{
+'name':3060,'children':NULL},{'name':2563,'children':NULL},{'name':3049,'children':NULL},{'name':761,'children':NULL},{'name':3067,'children':NULL},{'name':3073,'children':NULL},{'name':3062,
+'children':NULL},{'name':3071,'children':NULL},{'name':2565,'children':NULL},{'name':2567,'children':NULL},{'name':3066,'children':NULL},{'name':3069,'children':NULL},{'name':2564,'children':
+NULL},{'name':1781,'children':NULL},{'name':1512,'children':NULL},{'name':3070,'children':NULL},{'name':3063,'children':NULL}]}
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_3_json_out" | tr -d '\"' | sed 's/\t//g'  > /home/project/tumorsim/detectable_cellcount_mutations_3_json_out
+
+-- *******************************************************************************************************************;
+-- level 3 mutations import json;
+-- *******************************************************************************************************************;
+
+drop            table tumorsim.detectable_cellcount_mutations_3_json_in;
+create external table tumorsim.detectable_cellcount_mutations_3_json_in
+  (tumorid string , parent string , subpop bigint , subclone_json string)
+  row format delimited fields terminated by '|'
+;
+load data local inpath '/home/project/tumorsim/detectable_cellcount_mutations_3_json_out' overwrite into table tumorsim.detectable_cellcount_mutations_3_json_in;
+
+select * from tumorsim.detectable_cellcount_mutations_3_json_in limit 3;
+
+tumorid parent subpop subclone_json
+AA9_1849  4 4  {'name':52,'children':NULL}
+AA9_1849  4 10 {'name':55,'children':NULL}
+AA9_1849  4 2  {'name':63,'children':NULL}
+
+
+-- *******************************************************************************************************************;
+-- level 2 mutations and their children with one more mutation;
+-- *******************************************************************************************************************;
+
+drop   table tumorsim.detectable_cellcount_mutations_2_json_builder;
+create table tumorsim.detectable_cellcount_mutations_2_json_builder as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+      , collect_set(children.subclone_json) as children_json
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells , subclone_json
+      from tmp.tumors_detectable_json
+      where finalsnapshot='Y' and mutations = 2
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_3_json_in children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+  ) joined
+  where subpop > 0
+;
+
+select * from tumorsim.detectable_cellcount_mutations_2_json_builder where size(children_json)>1 limit 1;
+
+AA9_4621  3 0 1.5213864053379507  164 0 2 1116831358  'name':3  1116831494  ["{'name':19,'children':NULL}","{'name':21,'children':NULL}","{'name':12,'children':NULL}","{'name':4,'chil
+ren':NULL}","{'name':16,'children':NULL}","{'name':22,'children':NULL}","{'name':20,'children':NULL}","{'name':23,'children':NULL}","{'name':24,'children':NULL}","{'name':7,'children':NULL}","{'name':13,'children':NULL}"]
+
+-- *******************************************************************************************************************;
+-- level 2 mutations build out partial json structure;
+-- *******************************************************************************************************************;
+
+drop   view tumorsim.detectable_cellcount_mutations_2_json_out;
+create view tumorsim.detectable_cellcount_mutations_2_json_out as
+  select tumorid,'|',parent,'|',subpop,'|{',subclone_json,",'children':",case when size(children_json)>0 then children_json end as children_json,'}' 
+  from tumorsim.detectable_cellcount_mutations_2_json_builder
+;
+
+select * from tumorsim.detectable_cellcount_mutations_2_json_out where size(children_json)>1 limit 1;
+
+AA9_4621|0|1116831494|{'name':3,'children':["{'name':19,'children':NULL}","{'name':21,'children':NULL}","{'name':12,'children':NULL}","{'name':4,'children':NULL}","{'name':16,'childre
+n':NULL}","{'name':22,'children':NULL}","{'name':20,'children':NULL}","{'name':23,'children':NULL}","{'name':24,'children':NULL}","{'name':7,'children':NULL}","{'name':13,'children':NULL}"]   }
+
+-- *******************************************************************************************************************;
+-- level 2 mutations export to build partial json and strip out the tabs and double quotes;
+-- *******************************************************************************************************************;
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_2_json_out where size(children_json)>0 limit 1" | tr -d '\"' | sed 's/\t//g'  
+
+AA9_3517|0|191703834|{'name':22,'children':[{'name':144,'children':NULL}]}
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_2_json_out" | tr -d '\"' | sed 's/\t//g'  > /home/project/tumorsim/detectable_cellcount_mutations_2_json_out
+
+-- *******************************************************************************************************************;
+-- level 2 mutations import json;
+-- *******************************************************************************************************************;
+
+drop            table tumorsim.detectable_cellcount_mutations_2_json_in;
+create external table tumorsim.detectable_cellcount_mutations_2_json_in
+  (tumorid string , parent string , subpop bigint , subclone_json string)
+  row format delimited fields terminated by '|'
+;
+load data local inpath '/home/project/tumorsim/detectable_cellcount_mutations_2_json_out' overwrite into table tumorsim.detectable_cellcount_mutations_2_json_in;
+
+select * from tumorsim.detectable_cellcount_mutations_2_json_in where length(subclone_json) > 40 limit 3;
+
+tumorid parent subpop subclone_json
+AA9_3517  0 191703834   {'name':22,'children':[{'name':144,'children':NULL}]}
+
+AA9_4621  0 1116831494  {'name':3,'children':[{'name':19,'children':NULL},{'name':21,'children':NULL},{'name':12,'children':NULL},{'name':4,'children':NULL},{'name':16,'children':NULL},{'name':22,'children':NULL},{'name
+:20,'children':NULL},{'name':23,'children':NULL},{'name':24,'children':NULL},{'name':7,'children':NULL},{'name':13,'children':NULL}]}
+
+AB9_1250  0 1035494     {'name':4,'children':[{'name':169,'children':NULL}]}
+
+
+-- *******************************************************************************************************************;
+-- level 1 mutations and their children with one more mutation;
+-- *******************************************************************************************************************;
+
+drop   table tumorsim.detectable_cellcount_mutations_1_json_builder;
+create table tumorsim.detectable_cellcount_mutations_1_json_builder as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+      , collect_set(children.subclone_json) as children_json
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells , subclone_json
+      from tmp.tumors_detectable_json
+      where finalsnapshot='Y' and mutations = 1
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_2_json_in children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells , parents.subclone_json
+  ) joined
+  where subpop > 0
+;
+
+select * from tumorsim.detectable_cellcount_mutations_1_json_builder where size(children_json)>1 limit 1;
+
+AA9_10450-11.25829558621507461011138156449'name':01138156612["{'name':12,'children':NULL}","{'name':21,'children':NULL}","{'name':17,'children':NULL}","{'name':5,'child
+ren':NULL}","{'name':15,'children':NULL}","{'name':25,'children':NULL}","{'name':22,'children':NULL}","{'name':23,'children':NULL}","{'name':20,'children':NULL}","{'name':7,'children':NULL}","{'name':13,'children':NULL}","{'name':19,'ch
+ildren':NULL}","{'name':11,'children':NULL}","{'name':14,'children':NULL}","{'name':26,'children':NULL}","{'name':24,'children':NULL}","{'name':2,'children':NULL}"]
+
+-- *******************************************************************************************************************;
+-- level 1 mutations build out partial json structure;
+-- *******************************************************************************************************************;
+
+drop   view tumorsim.detectable_cellcount_mutations_1_json_out;
+create view tumorsim.detectable_cellcount_mutations_1_json_out as
+  select '{',"'name':'",tumorid ,"','children':",case when size(children_json)>0 then children_json end ,'}'
+  from tumorsim.detectable_cellcount_mutations_1_json_builder
+;
+
+select 'var flare =' , * from tumorsim.detectable_cellcount_mutations_1_json_out where tumorid = 'AA9_1045';
+
+{'name':'AA9_1045','children':   ["{'name':12,'children':NULL}","{'name':21,'children':NULL}","{'name':17,'children':NULL}","{'name':5,'children':NULL}","{'name':15,'children':NULL}","{'name':25,'children':NULL}",
+"{'name':22,'children':NULL}","{'name':23,'children':NULL}","{'name':20,'children':NULL}","{'name':7,'children':NULL}","{'name':13,'children':NULL}","{'name':19,'children':NULL}","{'name':11,'children':NULL}","{'name':14,'children':NULL
+}","{'name':26,'children':NULL}","{'name':24,'children':NULL}","{'name':2,'children':NULL}"]}
+
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_1_json_out where tumorid='AA9_1849'" | tr -d '\"' | sed 's/\t//g'  | sed 's/NULL/0/g'
+
+
+hive -e "set hive.execution.engine=tez; select * from tumorsim.detectable_cellcount_mutations_1_json_out" | tr -d '\"' | sed 's/\t//g'  | sed 's/NULL/0' > /home/project/tumorsim/detectable_cellcount_mutations_1_json_out
+
+
+hive -e "set hive.execution.engine=tez; select 'var flare =' , * from tumorsim.detectable_cellcount_mutations_1_json_out where tumorid='AD9_1804'" | tr -d '\"' | sed 's/\t//g'  | sed 's/NULL/0/g' > /home/project/tumorsim/tumorid_AD9_1804.js
+
+head /home/project/tumorsim/tumorid_AD9_1804.js
+
+
+
+select * from tumorsim.detectable_cellcount_mutations_5_json where tumorid='AD9_1804';
+parent 36509
+
+select * from tumorsim.detectable_cellcount_mutations_5_json where tumorid='AD9_1804';
+
+select parent from tmp.tumors_detectable_json where tumorid='AD9_1804' and subclone = 36509 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_1804' and subclone = 1003 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_1804' and subclone = 36 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_1804' and subclone = 10 limit 1;
+0
+
+
+hive -e "set hive.execution.engine=tez; select 'var flare =' , * from tumorsim.detectable_cellcount_mutations_1_json_out where tumorid='AD9_3568'" | tr -d '\"' | sed 's/\t//g'  | sed 's/NULL/0/g' > /home/project/tumorsim/tumorid_AD9_3568.js
+
+chmod 777 *.*
+
+
+select parent from tmp.tumors_detectable_json where tumorid='AD9_3568' and subclone = 16925 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_3568' and subclone = 616 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_3568' and subclone = 48 limit 1;
+select parent from tmp.tumors_detectable_json where tumorid='AD9_3568' and subclone = 2 limit 1;
+0

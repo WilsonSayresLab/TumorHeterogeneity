@@ -1,0 +1,567 @@
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+
+-- *******************************************************************************************************;
+-- live subclones at finalsnapshot for all tumors, aggregated by mutations;
+-- *******************************************************************************************************;
+
+drop   table if     exists tumorsim.final_live_subclone_aggregates;
+create table if not exists tumorsim.final_live_subclone_aggregates as
+  select tumorid , mutations
+  , count(subclone) as subclones 
+  , sum(cells) as cells
+  from tumorsim.tumors
+  where finalsnapshot = "Y" and cells > 0
+  group by tumorid , mutations
+;
+-- 1395 rows;
+
+-- *******************************************************************************************************;
+-- ending population from each detectable tumor;
+-- *******************************************************************************************************;
+
+create view tumorsim.tumor_endpop_endclones as 
+  select tumorid 
+  , substr(tumorid,1,3) as tumorclass 
+  , sum(cells) as endpop 
+  , sum(subclones) as endclones
+  from tumorsim.final_live_subclone_aggregates 
+  group by tumorid
+;
+
+-- *******************************************************************************************************;
+-- live subclones at finalsnapshot for detectable tumors;
+-- *******************************************************************************************************;
+
+drop   table if     exists tumorsim.detectable_aggregates;
+create table if not exists tumorsim.detectable_aggregates as
+  select p.tumorclass , p.tumorid , p.endpop , p.endclones
+    , t.mutations , t.subclones , t.cells
+    , subclones / endclones as pctsubclones
+    , cells     / endpop    as pctcells
+  from tumorsim.tumor_endpop_endclones P
+  inner join tumorsim.final_live_subclone_aggregates T
+    on P.tumorid = T.tumorid
+  where endpop >= pow(10,9)
+;
+-- 1395 rows;
+
+select * from tumorsim.detectable_aggregates limit 9;
+
+select max(mutations) from tumorsim.detectable_aggregates;
+-- 5;
+
+-- *******************************************************************************************************;
+-- average percent of clones per mutation;
+-- *******************************************************************************************************;
+  
+select tumorclass 
+    ,'  ', mutations
+    ,'  ', count(*) as tumors
+    ,'  ', round(avg(pctsubclones),6) as avgpctsubclones
+    ,'  ', round(avg(pctcells),6) as avgpctcells
+  from tumorsim.detectable_aggregates
+  group by tumorclass , mutations
+  order by tumorclass , mutations
+;
+
+/*
+tumorclass mutations tumors avgpctsubclones avgpctcells
+AA9  1  105  0.047519  0.94093
+AA9  2  105  0.914216  0.059065
+AA9  3  10  0.401778  5.8E-5
+AB9  1  123  0.005115  0.852505
+AB9  2  123  0.877145  0.147495
+AB9  3  38  0.381106  3.0E-6
+AC9  1  134  5.47E-4   0.735434
+AC9  2  134  0.764119  0.257543
+AC9  3  94  0.328024  0.010011
+AC9  4  6  0.116761  1.0E-6
+AD9  1  111  5.9E-5    0.464417
+AD9  2  111  0.497721  0.528913
+AD9  3  111  0.496923  0.006662
+AD9  4  65  0.009033  1.4E-5
+AD9  5  6  1.38E-4   0.0
+BA9  1  3  0.035647  0.971661
+BA9  2  3  0.939353  0.028339
+BA9  3  1  0.075     0.0
+BB9  1  4  0.003054  0.758689
+BB9  2  4  0.763463  0.241306
+BB9  3  1  0.933934  1.7E-5
+BC9  1  3  3.57E-4   0.46713
+BC9  2  3  0.526914  0.321649
+BC9  3  3  0.290443  0.21121
+BC9  4  1  0.546858  3.4E-5
+BD9  1  10  3.9E-5    0.236718
+BD9  2  10  0.273251  0.609134
+BD9  3  10  0.588704  0.153745
+BD9  4  10  0.137644  4.03E-4
+BD9  5  3  0.001205  2.0E-6
+CA9  1  2  0.027576  0.999991
+CA9  2  2  0.972424  9.0E-6
+CB9  1  2  0.002593  0.925976
+CB9  2  2  0.947619  0.074023
+CB9  3  1  0.099576  1.0E-6
+CC9  1  2  2.76E-4   0.576295
+CC9  2  2  0.613192  0.42339
+CC9  3  2  0.386255  3.15E-4
+CC9  4  2  2.76E-4   0.0
+CD9  1  8  3.5E-5    0.268591
+CD9  2  8  0.291768  0.727649
+CD9  3  8  0.704883  0.003756
+CD9  4  8  0.003305  4.0E-6
+CD9  5  1  6.8E-5    0.0
+*/
+
+-- *******************************************************************************************************;
+-- *** min,avg,max generations per tumor;
+-- *******************************************************************************************************;
+drop   view if     exists tumorsim.tumorclass_ageing;
+create view if not exists tumorsim.tumorclass_ageing as
+  select tumorclass 
+  ,'         ', count(*) as freq
+  ,'        ' , min(maxgen) as minage
+  ,'      '   , ROUND(avg(maxgen),1) as avgage
+  ,'    '     , max(maxgen)  as maxage
+  ,'       '  , round(sum(mass10to7th)/count(*),1) as mass10to7th
+  ,'       '  , round(sum(mass10to8th)/count(*),1) as mass10to8th
+  ,'       '  , round(avg(gen10to9th - gen10to8th),1) as gen8to9th
+  ,'      '   , sum(case when maxpop >= pow(10,9) then 1 else 0 end) as detectable
+  from (
+          select substr(tumorid,1,3) as tumorclass 
+            , tumorid 
+            , max(generation) as maxgen 
+            , max(population) as maxpop
+            , min(case when population >= pow(10,8) then generation end) as gen10to8th
+            , min(case when population >= pow(10,9) then generation end) as gen10to9th
+            , max(case when mass10to7th > 0 then 1 else 0 end) as mass10to7th
+            , max(case when mass10to8th > 0 then 1 else 0 end) as mass10to8th
+          from tumorsim.populations 
+          where tumorid rlike('[0-9]{4}$') 
+          group by substr(tumorid,1,3) , tumorid 
+        ) t 
+  group by tumorclass 
+  order by tumorclass
+;
+
+select * from tumorsim.tumorclass_ageing;
+
+/*
+tumorclass  count  minage  avgage  maxage  mass10to7th mass10to8th gen8to9th detectable
+AA9         749        2        31.4    931        0.1        0.1        19.2        105
+AB9         748        2        32.5    713        0.2        0.2        14.9        123
+AC9         748        2        33.8    703        0.2        0.2        12.0        134
+AD9         748        2        26.5    852        0.1        0.1        8.5        109
+BA9         999        2        11.2    771        0.0        0.0        65.3        3
+BB9         999        2        14.3    1455        0.0        0.0        93.3        4
+BC9         999        2        11.6    1331        0.0        0.0        69.0        3
+BD9         998        2        16.9    1441        0.0        0.0        53.6        10
+CA9         999        2        16.5    3600        0.0        0.0        287.5           2
+CB9         1000        2        12.8    3569        0.0        0.0        278.0           2
+CC9         999        2        15.0    2233        0.0        0.0        160.5           2
+CD9         999        2        19.4    2295        0.0        0.0        76.8        8
+*/
+
+
+
+-- *******************************************************************************************************;
+-- change tumors to external table;
+-- drop the table;
+-- add two vars to tumors:  mutation_selection and resistant;
+-- create a list of all partitions from hdfs;
+-- then re-add all partitions in tumors;
+-- *******************************************************************************************************;
+
+use tumorsim;
+
+-- verifiy the table is currently managed;
+describe extended tumorsim.tumors;
+--tableType:MANAGED_TABLE;
+
+-- convert to external before blowing away the metadata;
+ALTER TABLE tumorsim.tumors SET TBLPROPERTIES('EXTERNAL'='TRUE');
+
+-- verifiy the table is now externally managed;
+describe extended tumors;
+-- EXTERNAL=TRUE;
+
+-- drop old meta and create new metadata;
+drop table if exists tumorSim.tumors;
+
+create external table if not exists tumorSim.tumors 
+  ( subClone Int , parent Int , mutation Double , beta Double , fitness Double , cells Int , mutations Int , dob Int , dod Int , maxpop Int , deaths Int , mutation_selection Double , resistant Int ) 
+  partitioned by ( tumorid String , finalsnapshot String , year double ) 
+  stored as parquet
+;
+
+-- change back to managed so we can drop potentially corrupt partitions from spark;
+ALTER TABLE tumorsim.tumors SET TBLPROPERTIES('EXTERNAL'='FALSE');
+
+-- verifiy the table is now externally managed;
+describe extended tumors;
+-- tableType:MANAGED_TABLE;
+
+-- get a list of all partition directories;
+hadoop dfs -ls /project/tumorsim/tumors/*/* | grep tumors | cut -c58- > tumor_partitions.txt
+
+-- import the list of directories;
+create table if not exists tumor_partitions (record string);
+load data local inpath '/home/jnapier3/tumor_partitions.txt' overwrite into table tumor_partitions;
+
+select record from tumor_partitions limit 2;
+
+/project/tumorsim/tumors/tumorid=AA9_1/finalsnapshot=N/year=1.0
+/project/tumorsim/tumors/tumorid=AA9_1/finalsnapshot=N/year=2.0
+
+-- partition adder code builder;
+create view if not exists repair_tumor_partitions as
+  select concat("alter table tumorsim.tumors add partition (tumorid='" , tumorid , "',finalsnapshot='" , finalsnapshot , "',year='" , year , "') location '" , location , "'\;")
+    from 
+    (
+      select split(split(record,"\/")[4],"\=")[1] as tumorid 
+           , split(split(record,"\/")[5],"\=")[1] as finalsnapshot 
+           , split(split(record,"\/")[6],"\=")[1] as year 
+           , record as location 
+           from tumor_partitions 
+           where length(trim(record)) > 50
+        --    limit 3
+    ) t
+;
+
+-- build repartitioning code to hdfs;
+hive -e 'select * from tumorsim.repair_tumor_partitions' | grep tumorid > /home/jnapier3/tumor_partition_adder.hive
+
+-- import and run repartitioning code;
+source /home/jnapier3/tumor_partition_adder.hive;
+
+
+-- *******************************************************************************************************;
+-- full dump of tumors so far, and remember to cleanup the logs;
+-- hive -e "select '* ',* from mydb.mytable" | grep -E '^*' | cut -c3- > mytabdelimitedoutput.txt
+-- *******************************************************************************************************;
+
+create view if not exists tumorsim.detectables as select tumorid from tumorsim.populations where population >= pow(10,9) ;
+
+hive -e "select count(*) from tumorsim.detectables"
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.populations order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/populations.//g' > /home/project/tumorsim/populations.txt
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.tumors order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/tumors.//g' > /home/project/tumorsim/tumors.txt
+
+create view if not exists tumorsim.tumors_detectable as select t.* from tumorsim.detectables D inner join tumorsim.tumors t on t.tumorid = d.tumorid;
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.tumors_detectable order by tumorid , finalsnapshot , year , subclone" | grep -E '^\_c0'| cut -c5- | sed 's/tumors.//g' > /home/project/tumorsim/tumors_detectable.txt
+
+create view if not exists tumorsim.populations_detectable as select p.* from tumorsim.detectables D inner join tumorsim.populations p on p.tumorid = d.tumorid;
+
+hive -e "set hive.cli.print.header=true; select '_c0',* from tumorsim.populations_detectable order by tumorid , generation" | grep -E '^\_c0'| cut -c5- | sed 's/populations.//g' > /home/project/tumorsim/populations_detectable.txt
+
+or faster method from a temp database
+
+hive -e "set hive.cli.print.header=true; select * from tmp.tumors_detectable order by tumorid , finalsnapshot , year , subclone" | sed 's/tumors.//g' > /home/project/tumorsim/tumors_detectable.txt
+
+hive -e "set hive.cli.print.header=true; select * from tmp.populations_detectable order by tumorid , generation" | sed 's/populations.//g' > /home/project/tumorsim/populations_detectable.txt
+
+
+use tmp;
+show tables;
+
+drop table if exists tmp.detectables; 
+create table if not exists tmp.detectables as select * from tumorsim.detectables;
+
+drop table if exists tmp.populations_detectable; 
+create table if not exists tmp.populations_detectable as select p.* from tmp.detectables D inner join tumorsim.populations p on p.tumorid = d.tumorid;
+hive -e "set hive.cli.print.header=true; select * from tmp.populations_detectable order by split(tumorid,'_')[1] , generation" | sed 's/populations_detectable.//g' > /home/project/tumorsim/populations_detectable.txt
+
+drop   table if     exists tmp.tumors_detectable;
+create table if not exists tmp.tumors_detectable as select t.* from tmp.detectables D inner join tumorsim.tumors t on t.tumorid = d.tumorid;
+hive -e "set hive.cli.print.header=true; select * from tmp.tumors_detectable order by split(tumorid,'_')[1] , finalsnapshot , year" | sed 's/tumors_detectable.//g' > /home/project/tumorsim/tumors_detectable.txt
+head /home/project/tumorsim/tumors_detectable.txt
+tail /home/project/tumorsim/tumors_detectable.txt
+
+-- /*******************************************************************************************************/;
+-- find the average number of generations from each mutation to the earliest next mutation by tumorclass;
+-- /*******************************************************************************************************/;
+
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+--drop   table if     exists tmp.tumors_subset;
+create table if not exists tmp.tumors_subset as
+  select tumorid , mutations , subclone , parent , dob
+  from tumorsim.tumors
+  where finalsnapshot = 'Y'
+;
+
+
+drop   table if     exists tmp.tumors_next_mutation_gens;
+--create table if not exists tmp.tumors_next_mutation_gens as
+  select substr(parents.tumorid,1,3) as tumorclass
+    , parents.tumorid
+    , parents.mutations
+    , parents.dob as parent_dob
+    , min(child.dob) as child_dob
+    , min(child.dob) - parents.dob as mutation_delay
+  from tmp.tumors_subset Parents
+    inner join tmp.tumors_subset Child
+      on Parents.tumorid = Child.tumorid
+        and Parents.subclone = Child.parent
+  group by substr(parents.tumorid,1,3) , parents.tumorid , parents.mutations , parents.dob
+;
+
+select tumorclass
+  ,'  ', mutations
+  ,'  ', cast(round(avg(mutation_delay),0) as int) as avg_mutation_delay
+  from tmp.tumors_next_mutation_gens
+  group by tumorclass , mutations
+  order by tumorclass , mutations
+;
+
+/*
+tumorclass mutations avg_mutation_delay
+*/
+
+-- /*******************************************************************************************************/;
+-- for detectables only : find the average number of generations from each mutation to the earliest next mutation by tumorclass;
+-- /*******************************************************************************************************/;
+
+drop   table if     exists tmp.tumors_subset_detectables_final;
+create table if not exists tmp.tumors_subset_detectables_final as
+  select T.tumorid , T.mutations , T.subclone , T.parent , T.dob
+  from (select distinct tumorid from tumorsim.detectable_aggregates) D
+  inner join tumorsim.tumors T
+    on D.tumorid = T.tumorid
+  where T.finalsnapshot = 'Y'
+;
+
+drop   table if     exists tmp.tumors_next_mutation_gens_detectables_final;
+create table if not exists tmp.tumors_next_mutation_gens_detectables_final as
+  select substr(parents.tumorid,1,3) as tumorclass
+    , parents.tumorid
+    , parents.mutations
+    , parents.dob as parent_dob
+    , min(child.dob) as child_dob
+    , min(child.dob) - parents.dob as mutation_delay
+  from tmp.tumors_subset_detectables_final Parents
+    inner join tmp.tumors_subset_detectables_final Child
+      on Parents.tumorid = Child.tumorid
+        and Parents.subclone = Child.parent
+  group by substr(parents.tumorid,1,3) , parents.tumorid , parents.mutations , parents.dob
+;
+
+select tumorclass
+  ,'  ', mutations
+  ,'  ', cast(round(avg(mutation_delay),0) as int) as avg_mutation_delay
+  from tmp.tumors_next_mutation_gens_detectables_final
+  group by tumorclass , mutations
+  order by tumorclass , mutations
+;
+/*
+tumorclass mutations avg_mutation_delay
+AA9  1  148
+AA9  2  70
+AB9  1  112
+AB9  2  46
+AC9  1  93
+AC9  2  38
+AC9  3  25
+AD9  1  76
+AD9  2  26
+AD9  3  19
+AD9  4  21
+BA9  1  354
+BA9  2  229
+BB9  1  544
+BB9  2  194
+BC9  1  270
+BC9  2  198
+BC9  3  171
+BD9  1  278
+BD9  2  113
+BD9  3  67
+BD9  4  49
+CA9  1  1190
+CB9  1  1138
+CB9  2  439
+CC9  1  973
+CC9  2  259
+CC9  3  192
+CD9  1  326
+CD9  2  143
+CD9  3  88
+CD9  4  119
+*/
+
+
+-- ***************************************************************************************************************************************;
+-- ***************************************************************************************************************************************;
+-- ***************************************************************************************************************************************;
+
+dump tumorid, gneration as x, mutation as y for time series to tableau
+show fitness and cell count on each bar
+
+
+generation---------------------------------------------:detectable 10^9 cells
+   0------------------------------------------:f1.01\x\maxpop=10k
+      |  |      |       |-----------x
+      |  |      |        
+      |  |      |------------------------:f1.01+0.0001\x have to show if children still alive, look at total cells in this subpath 
+      |  |           |----------------------------------:f\c  +.9
+      |  |
+      |  |----------------------------------------------:f1.2\c33
+      |            |------------------------------------:f1.3\c44
+      |                |------------x omit dead clones but track the number
+      |                    |----x    
+      |                    |----------------------------------------:
+      |                    |-----------------------------------:
+      |                    |------------------------------:
+      |                    |-------------------------------------------------------------------------------:
+      |
+      |---------------               
+      
+      
+-- *************************************************************************************************************;
+-- roll up the children cell count for each parent and add to parent cell count to get subpop;
+-- will need to do this one step at a time, from most mutations to least mutations;
+-- *************************************************************************************************************;
+
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+-- whats the most layers of mutations in detectables;
+select max(mutations) from tmp.tumors_detectable;
+-- 5;
+
+-- subclones with the most mutations = 5;
+drop   table tumorsim.detectable_cellcount_mutations_5;
+create table tumorsim.detectable_cellcount_mutations_5 as
+  select tumorid , subclone , parent , fitness , dob , dod , mutations , cells , cells as subpop
+  from tmp.tumors_detectable
+  where finalsnapshot='Y' and mutations = 5 and cells > 0
+;
+-- numrows=54;
+select distinct tumorid from tumorsim.detectable_cellcount_mutations_5;
+
+
+-- parents with 4 mutations plus thier children with 5 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_4;
+create table tumorsim.detectable_cellcount_mutations_4 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 4
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_5 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=47614;
+--select * from tumorsim.detectable_cellcount_mutations_4 limit 99;  
+
+-- parents with 3 mutations plus thier children with 4 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_3;
+create table tumorsim.detectable_cellcount_mutations_3 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+         , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 3
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_4 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=1270867;
+--select * from tumorsim.detectable_cellcount_mutations_3 limit 99;  
+select * from tumorsim.detectable_cellcount_mutations_3 where cells=0 limit 9;  
+
+
+-- parents with 2 mutations plus thier children with 3 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_2;
+create table tumorsim.detectable_cellcount_mutations_2 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+         , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 2
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_3 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=1340054;
+
+-- parents with 1 mutations plus thier children with 2 mutations, this is the total population of the tumor at finalsnapshot;
+drop   table tumorsim.detectable_cellcount_mutations_1;
+create table tumorsim.detectable_cellcount_mutations_1 as
+  select *
+  from
+  (
+  select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+       , parents.cells + coalesce(sum(children.subpop),0) as subpop
+  from
+  (
+    select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+    from tmp.tumors_detectable
+    where finalsnapshot='Y' and mutations = 1
+  ) parents
+  left join tumorsim.detectable_cellcount_mutations_2 children
+    on parents.tumorid = children.tumorid
+       and parents.subclone = children.parent
+  group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=505;
+
+drop   table tumorsim.detectable_subpops;
+create table tumorsim.detectable_subpops as
+  select *
+  from
+  (
+              select * from tumorsim.detectable_cellcount_mutations_1
+    union all select * from tumorsim.detectable_cellcount_mutations_2
+    union all select * from tumorsim.detectable_cellcount_mutations_3
+    union all select * from tumorsim.detectable_cellcount_mutations_4
+    union all select * from tumorsim.detectable_cellcount_mutations_5
+  ) unioned
+  order by tumorid , subclone
+;
+-- numRows=2659144;
+
+hive -e "set hive.cli.print.header=true; select * from tumorsim.detectable_subpops order by tumorid , subclone" | sed 's/detectable_subpops.//g' > /home/project/tumorsim/detectable_subpops.txt
+
+head /home/project/tumorsim/detectable_subpops.txt
+
+describe formatted tumorsim.detectable_subpops;
+
+select * from tumorsim.detectable_subpops where cells =0 limit 9;
+select * from tumorsim.detectable_subpops where parent = 1780 limit 9;
+
+

@@ -1,0 +1,66 @@
+-- ********************************************************************************************************************************************************************************;
+-- tumorsim shut off parquet writting and replaced with tab delimited files with .xls extentions, one per annual snapshot or final and one for the populations report;
+-- these views allow us to view the new tab delimited files just like the older parquet versions and combines the two views as if one;
+-- ********************************************************************************************************************************************************************************;
+
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+
+create external table if not exists tumorSim.tumors_xls 
+  ( subClone Int , parent Int , mutation Double , beta Double , fitness Double , cells Int , mutations Int , dob Int , dod Int , maxpop Int , deaths Int , mutation_selection Double , resistant Int) 
+  row format delimited fields terminated by '\t' stored as textfile
+  location '/project/tumorsim/tumors.xls'
+;
+
+--select * from tumorSim.tumors_xls limit 9;
+
+create view tumorSim.tumors_tabs as
+  select * 
+  , concat(split(split(input__file__name,'.xls/')[1],'_')[0],'_',split(split(input__file__name,'.xls/')[1],'_')[1]) as tumorid
+  , split(split(input__file__name,'.xls/')[1],'_')[2] as finalsnapshot
+  , split(split(input__file__name,'.xls/')[1],'_')[3] as year
+  from  tumorSim.tumors_xls
+;
+
+--select * from tumorSim.tumors_tabs limit 9;
+  
+create external table if not exists tumorSim.populations_xls 
+  ( generation Int , population Int , mass10to7th Int , mass10to8th Int)
+  row format delimited fields terminated by '\t' stored as textfile
+  location '/project/tumorsim/populations.xls'
+;
+
+-- select * from tumorSim.populations_xls limit 9;
+
+create view tumorSim.populations_tabs as
+  select * 
+  , concat(split(split(input__file__name,'.xls/')[1],'_')[0],'_',split(split(input__file__name,'.xls/')[1],'_')[1]) as tumorid
+  from  tumorSim.populations_xls
+;
+
+-- select * from tumorSim.populations_tabs limit 9;
+
+create view tumorSim.tumors_all as 
+  select *
+  from
+  (
+    select * from tumorSim.tumors
+    union all
+    select * from tumorSim.tumors_tabs
+  ) unioned
+;
+
+-- select * from tumorSim.tumors_all limit 9;
+
+create view tumorSim.populations_all as 
+  select *
+  from
+  (
+    select * from tumorSim.populations
+    union all
+    select * from tumorSim.populations_tabs
+  ) unioned
+;
+
+-- select * from tumorSim.populations_all limit 9;

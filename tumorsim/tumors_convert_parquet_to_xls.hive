@@ -1,0 +1,8 @@
+-- *******************************************************************************************************************;
+-- tumors_convert_parquet_to_xls.hive;
+-- *******************************************************************************************************************;
+
+select '_c0',subClone , parent , mutation , beta , fitness , cells , mutations , dob , dod , maxpop , deaths , mutation_selection , resistant 
+from tumorsim.tumors 
+where tumorid='${env:tumorid}' and finalsnapshot='${env:finalsnapshot}' and year=${env:year}
+;

@@ -1,0 +1,5 @@
+set hive.execution.engine=tez;
+select subClone , parent , mutation , beta , fitness , cells , mutations , dob , dod , maxpop , deaths , mutation_selection , resistant 
+from tumorsim.tumors 
+where tumorid='${env:tumorid}' and finalsnapshot='${env:finalsnapshot}' and year=${env:year}
+;

@@ -1,0 +1,26 @@
+-- ************************************************************************************************************;
+-- initialize_tumors_to_json.hive;
+-- ************************************************************************************************************;
+-- from highest level mutations, create initial subclone json formatting with single quotes to be replaced with doubles at the end;
+-- ************************************************************************************************************;
+
+set hive.execution.engine=tez;
+
+--!echo mutations=${env:mutations};;
+-- mutations=6;
+
+create table if not exists tumorsim.detectable_json_children
+  (tumorid string , parent string , subpop bigint , json string)
+  row format delimited fields terminated by '|'
+;
+
+insert overwrite table tumorsim.detectable_json_children
+  select tumorid,parent,cells as subpop
+  , concat("{'name':",subclone,",'subpop':",cells,",'mutations':",mutations,",'fitness':",fitness,"}") as json
+  from tumorsim.tumors_detectable
+  where finalsnapshot='Y' and mutations = ${env:mutations} and cells > 0
+;
+
+--select * from tumorsim.detectable_json_children limit 1;
+
+--BD9_20308 14107 32  {'name':54249,'subpop':32,'mutations':6,'fitness':1.1180860558883867}

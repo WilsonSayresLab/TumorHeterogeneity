@@ -1,0 +1,142 @@
+-- *************************************************************************************************************;
+-- roll up the children cell count for each parent and add to parent cell count to get subpop;
+-- will need to do this one step at a time, from most mutations to least mutations;
+-- *************************************************************************************************************;
+
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+-- whats the most layers of mutations in detectables;
+select max(mutations) from tmp.tumors_detectable;
+-- 5;
+
+-- subclones with the most mutations = 5;
+drop   table tumorsim.detectable_cellcount_mutations_5;
+create table tumorsim.detectable_cellcount_mutations_5 as
+  select tumorid , subclone , parent , fitness , dob , dod , mutations , cells , cells as subpop
+  from tmp.tumors_detectable
+  where finalsnapshot='Y' and mutations = 5 and cells > 0
+;
+-- numrows=54;
+select distinct tumorid from tumorsim.detectable_cellcount_mutations_5;
+
+
+-- parents with 4 mutations plus thier children with 5 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_4;
+create table tumorsim.detectable_cellcount_mutations_4 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+      , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations, cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 4
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_5 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=47614;
+--select * from tumorsim.detectable_cellcount_mutations_4 limit 99;  
+
+-- parents with 3 mutations plus thier children with 4 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_3;
+create table tumorsim.detectable_cellcount_mutations_3 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+         , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 3
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_4 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=1270867;
+--select * from tumorsim.detectable_cellcount_mutations_3 limit 99;  
+select * from tumorsim.detectable_cellcount_mutations_3 where cells=0 limit 9;  
+
+
+-- parents with 2 mutations plus thier children with 3 mutations;
+drop   table tumorsim.detectable_cellcount_mutations_2;
+create table tumorsim.detectable_cellcount_mutations_2 as
+  select *
+  from
+  (
+    select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+         , parents.cells + coalesce(sum(children.subpop),0) as subpop
+    from
+    (
+      select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+      from tmp.tumors_detectable
+      where finalsnapshot='Y' and mutations = 2
+    ) parents
+    left join tumorsim.detectable_cellcount_mutations_3 children
+      on parents.tumorid = children.tumorid
+         and parents.subclone = children.parent
+    group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=1340054;
+
+-- parents with 1 mutations plus thier children with 2 mutations, this is the total population of the tumor at finalsnapshot;
+drop   table tumorsim.detectable_cellcount_mutations_1;
+create table tumorsim.detectable_cellcount_mutations_1 as
+  select *
+  from
+  (
+  select parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+       , parents.cells + coalesce(sum(children.subpop),0) as subpop
+  from
+  (
+    select tumorid , subclone , parent , fitness , dob , dod , mutations , cells
+    from tmp.tumors_detectable
+    where finalsnapshot='Y' and mutations = 1
+  ) parents
+  left join tumorsim.detectable_cellcount_mutations_2 children
+    on parents.tumorid = children.tumorid
+       and parents.subclone = children.parent
+  group by parents.tumorid , parents.subclone , parents.parent , parents.fitness , parents.dob , parents.dod , parents.mutations , parents.cells
+  ) joined
+  where subpop > 0
+;
+-- numRows=505;
+
+drop   table tumorsim.detectable_subpops;
+create table tumorsim.detectable_subpops as
+  select *
+  from
+  (
+              select * from tumorsim.detectable_cellcount_mutations_1
+    union all select * from tumorsim.detectable_cellcount_mutations_2
+    union all select * from tumorsim.detectable_cellcount_mutations_3
+    union all select * from tumorsim.detectable_cellcount_mutations_4
+    union all select * from tumorsim.detectable_cellcount_mutations_5
+  ) unioned
+  order by tumorid , subclone
+;
+-- numRows=2659144;
+
+hive -e "set hive.cli.print.header=true; select * from tumorsim.detectable_subpops order by tumorid , subclone" | sed 's/detectable_subpops.//g' > /home/project/tumorsim/detectable_subpops.txt
+
+head /home/project/tumorsim/detectable_subpops.txt
+
+describe formatted tumorsim.detectable_subpops;
+
+select * from tumorsim.detectable_subpops where cells =0 limit 9;
+select * from tumorsim.detectable_subpops where parent = 1780 limit 9;

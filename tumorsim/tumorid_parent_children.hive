@@ -1,0 +1,19 @@
+-- *************************************************************************************************************;
+-- create an array of child subclones for each parent within each tumor for Ankush to build a javascript tree;
+-- *************************************************************************************************************;
+
+set hive.cli.print.header=true;
+set hive.execution.engine=tez;
+
+drop   table if exists tumorsim.tumorid_parent_children;
+create table tumorsim.tumorid_parent_children as
+  select tumorid , parent
+  , collect_set(subclone) as children
+  from tumorsim.detectable_subpops_maxgen
+  where parent >= 0
+  group by tumorid , parent
+  order by tumorid , parent
+;
+
+select * from tumorsim.tumorid_parent_children order by tumorid , parent limit 33;
+
